@@ -279,6 +279,7 @@ class NetworkPlugin(object):
         annotations = self._get_metadata(pod, 'annotations')
 
         if 'allowFrom' in annotations.keys():
+            # Remove Default Rule (Allow Namespace)
             inbound_rules = []
             rules = json.loads(annotations['allowFrom'])
             for rule in rules:
@@ -287,6 +288,7 @@ class NetworkPlugin(object):
                 inbound_rules.append(rule)
 
         if 'allowTo' in annotations.keys():
+            # Remove Default Rule
             outbound_rules = []
             rules = json.loads(annotations['allowTo'])
             for rule in rules:
