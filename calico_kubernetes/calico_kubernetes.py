@@ -77,7 +77,7 @@ class NetworkPlugin(object):
         container_ip = self._read_docker_ip()
         self._delete_docker_interface()
         print('Configuring Calico network interface')
-        self.calicoctl('container', 'add', self.docker_id, container_ip, 'eth0')
+        self.calicoctl('container', 'add', self.docker_id, container_ip, '--interface=eth0')
         ep = self._datastore_client.get_endpoint(workload_id=self.docker_id)
         interface_name = generate_cali_interface_name(IF_PREFIX, ep.endpoint_id)
         node_ip = self._get_node_ip()
