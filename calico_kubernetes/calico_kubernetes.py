@@ -6,6 +6,7 @@ from subprocess import check_output, CalledProcessError, check_call
 import requests
 from urllib import quote
 import sh
+import re
 
 # Append to existing env, to avoid losing PATH etc.
 # Need to edit the path here since calicoctl loads client on import.
@@ -262,40 +263,34 @@ class NetworkPlugin(object):
         namespace, ns_tag = self._get_namespace_and_tag(pod)
 
         inbound_rules = [
-            {
-                "action": "allow",
-                "src_tag": ns_tag
-            }
+            "allow from tag %s" % ns_tag
         ]
 
         outbound_rules = [
-            {
-                "action": "allow"
-            }
+            "allow"
         ]
 
         print('Getting Policy Rules from Annotation of pod %s' % pod)
 
         annotations = self._get_metadata(pod, 'annotations')
 
-        if 'allowFrom' in annotations.keys():
+        if 'policy' in annotations.keys():
             # Remove Default Rule (Allow Namespace)
             inbound_rules = []
-            rules = json.loads(annotations['allowFrom'])
-            for rule in rules:
-                rule['action'] = 'allow'
-                rule = self._translate_rule(rule, namespace)
-                inbound_rules.append(rule)
+            rules = annotations['policy']
+            for rule in rules.split(';'):
+                args = rule.split(' ')
+                if 'label' in args:
+                    label_arg = args.index('label')
+                    label = args[label_arg + 1]
+                    args[label_arg] = 'tag'
+                    key, value = label.split('=')
+                    tag = self._label_to_tag(key, value, namespace)
+                    args[label_arg + 1] = tag
+                    inbound_rules.append(rule)
 
-        if 'allowTo' in annotations.keys():
-            # Remove Default Rule
-            outbound_rules = []
-            rules = json.loads(annotations['allowTo'])
-            for rule in rules:
-                rule['action'] = 'allow'
-                rule = self._translate_rule(rule, namespace)
-                outbound_rules.append(rule)
-
+        print 'inbound rules to add \n%s' % inbound_rules
+        print 'outbound rules to add \n%s' % inbound_rules
         return inbound_rules, outbound_rules
 
     def _generate_profile_json(self, profile_name, rules):
@@ -329,10 +324,12 @@ class NetworkPlugin(object):
         :return:
         """
         rules = self._generate_rules(pod)
-        profile_json = self._generate_profile_json(profile_name, rules)
-
-        # Pipe the Profile JSON into the calicoctl command to update the rule.
-        self.calicoctl('profile', profile_name, 'rule', 'update', _in=profile_json)
+        for rule in rules:
+            print 'applying rule \n%s' % rule
+            try:
+                self.calicoctl('profile', profile_name, 'rule', 'add', 'inbound', rule)
+            except sh.ErrorReturnCode as e:
+                print('Could not create rule %s.\n%s' % (rule, e))
         print('Finished applying rules.')
 
     def _apply_tags(self, profile_name, pod):
@@ -386,9 +383,7 @@ class NetworkPlugin(object):
 
     def _escape_chars(self, tag):
         escape_seq = '_'
-        tag = quote(tag, safe='')
-        tag = tag.replace('%', escape_seq)
-        return tag
+        return re.sub('[^a-zA-Z0-9 \n\.]', escape_seq, tag)
 
     def _get_namespace_and_tag(self, pod):
         namespace = self._get_metadata(pod, 'namespace')
