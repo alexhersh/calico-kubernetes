@@ -261,6 +261,11 @@ class NetworkPlugin(object):
 
         namespace, ns_tag = self._get_namespace_and_tag(pod)
 
+        # kube-system services need to be accessed by all namespaces
+        if namespace is "kube-system" :
+            print "using kube-system, allow all"
+            return [{"action": "allow"}], [{"action": "allow"}]
+
         inbound_rules = [
             {
                 "action": "allow",
@@ -286,15 +291,6 @@ class NetworkPlugin(object):
                 rule['action'] = 'allow'
                 rule = self._translate_rule(rule, namespace)
                 inbound_rules.append(rule)
-
-        if 'allowTo' in annotations.keys():
-            # Remove Default Rule
-            outbound_rules = []
-            rules = json.loads(annotations['allowTo'])
-            for rule in rules:
-                rule['action'] = 'allow'
-                rule = self._translate_rule(rule, namespace)
-                outbound_rules.append(rule)
 
         return inbound_rules, outbound_rules
 
@@ -384,11 +380,13 @@ class NetworkPlugin(object):
             print('No %s found in pod %s' % (key, pod))
             return None
 
-    def _escape_chars(self, tag):
+    def _escape_chars(self, unescaped_string):
+        """
+        Calico can only handle 3 special chars, '_.-'
+        This function uses regex sub to replace SCs with _
+        """
         escape_seq = '_'
-        tag = quote(tag, safe='')
-        tag = tag.replace('%', escape_seq)
-        return tag
+        return re.sub('[^a-zA-Z0-9 \n\.]', escape_seq, unescaped_string)
 
     def _get_namespace_and_tag(self, pod):
         namespace = self._get_metadata(pod, 'namespace')
