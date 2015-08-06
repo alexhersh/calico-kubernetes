@@ -270,27 +270,29 @@ class NetworkPlugin(object):
             "allow"
         ]
 
-        print('Getting Policy Rules from Annotation of pod %s' % pod)
+        print("Getting Policy Rules from Annotation of pod %s" % pod)
 
-        annotations = self._get_metadata(pod, 'annotations')
+        annotations = self._get_metadata(pod, "annotations")
 
-        if 'policy' in annotations.keys():
+        if "policy" in annotations.keys():
             # Remove Default Rule (Allow Namespace)
             inbound_rules = []
-            rules = annotations['policy']
-            for rule in rules.split(';'):
-                args = rule.split(' ')
+            rules = annotations["policy"]
+            print "policy hook\n%s" % rules
+            for rule in rules.split(";"):
+                args = rule.split(" ")
+
                 if 'label' in args:
-                    label_arg = args.index('label')
-                    label = args[label_arg + 1]
-                    args[label_arg] = 'tag'
+                    print 'label hook'
+                    label_ind = args.index('label')
+                    args[label_ind] = 'tag'
+                    label = args[label_ind + 1]
                     key, value = label.split('=')
                     tag = self._label_to_tag(key, value, namespace)
-                    args[label_arg + 1] = tag
-                    inbound_rules.append(rule)
+                    args[label_ind + 1] = tag
 
-        print 'inbound rules to add \n%s' % inbound_rules
-        print 'outbound rules to add \n%s' % inbound_rules
+                inbound_rules.append(args)
+
         return inbound_rules, outbound_rules
 
     def _generate_profile_json(self, profile_name, rules):
@@ -323,14 +325,28 @@ class NetworkPlugin(object):
         :type profile_name: string
         :return:
         """
-        rules = self._generate_rules(pod)
-        for rule in rules:
-            print 'applying rule \n%s' % rule
+        inbound_rules, outbound_rules = self._generate_rules(pod)
+
+        print "Removing Default Rules"
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=2')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=1')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'outbound', '--at=1')
+
+        for rule in inbound_rules:
+            print 'applying inbound rule \n%s' % rule
             try:
                 self.calicoctl('profile', profile_name, 'rule', 'add', 'inbound', rule)
             except sh.ErrorReturnCode as e:
                 print('Could not create rule %s.\n%s' % (rule, e))
-        print('Finished applying rules.')
+            print('Finished applying rules.')
+
+        for rule in outbound_rules:
+            print 'applying outbound rule \n%s' % rule
+            try:
+                self.calicoctl('profile', profile_name, 'rule', 'add', 'outbound', rule)
+            except sh.ErrorReturnCode as e:
+                print('Could not create rule %s.\n%s' % (rule, e))
+            print('Finished applying rules.')
 
     def _apply_tags(self, profile_name, pod):
         """
