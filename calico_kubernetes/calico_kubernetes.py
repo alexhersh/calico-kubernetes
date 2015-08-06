@@ -251,16 +251,24 @@ class NetworkPlugin(object):
 
     def _generate_rules(self, pod):
         """
-        Generate the Profile rules that have been specified on the Pod's ports.
+        Generate Rules takes human readable policy strings in annotations
+        and creates argument arrays for calicoctl
 
-        We only create a Rule for a port if it has 'allowFrom' specified.
-
-        The Rule is structured to match the Calico etcd format.
-
-        :return list() rules: the rules to be added to the Profile.
+        :return two lists of rules(arg lists): inbound list of rules (arg lists)
+        outbound list of rules (arg lists)
         """
 
         namespace, ns_tag = self._get_namespace_and_tag(pod)
+
+        # kube-system services need to be accessed by all namespaces
+        if namespace is "kube-system" :
+            print "using kube-system, allow all"
+            return ["allow"], ["allow"]
+
+        # TODO: This method is append-only, not profile replacement, we need to remove default rules
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=2')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=1')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'outbound', '--at=1')
 
         inbound_rules = [
             "allow from tag %s" % ns_tag
@@ -274,16 +282,19 @@ class NetworkPlugin(object):
 
         annotations = self._get_metadata(pod, "annotations")
 
+        # Find policy block of annotations
         if "policy" in annotations.keys():
             # Remove Default Rule (Allow Namespace)
             inbound_rules = []
             rules = annotations["policy"]
-            print "policy hook\n%s" % rules
+
+            # Rules separated by semicolons
             for rule in rules.split(";"):
                 args = rule.split(" ")
 
+                # Replace labels with tags
+                # key=value -> namespace_key_value
                 if 'label' in args:
-                    print 'label hook'
                     label_ind = args.index('label')
                     args[label_ind] = 'tag'
                     label = args[label_ind + 1]
@@ -291,6 +302,8 @@ class NetworkPlugin(object):
                     tag = self._label_to_tag(key, value, namespace)
                     args[label_ind + 1] = tag
 
+                # Remove null args and add to rule list
+                args = filter(None, args)
                 inbound_rules.append(args)
 
         return inbound_rules, outbound_rules
@@ -328,9 +341,6 @@ class NetworkPlugin(object):
         inbound_rules, outbound_rules = self._generate_rules(pod)
 
         print "Removing Default Rules"
-        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=2')
-        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=1')
-        self.calicoctl('profile', profile_name, 'rule', 'remove', 'outbound', '--at=1')
 
         for rule in inbound_rules:
             print 'applying inbound rule \n%s' % rule
@@ -397,9 +407,13 @@ class NetworkPlugin(object):
             print('No %s found in pod %s' % (key, pod))
             return None
 
-    def _escape_chars(self, tag):
+    def _escape_chars(self, unescaped_string):
+        """
+        Calico can only handle 3 special chars, '_.-'
+        This function uses regex sub to replace SCs with _
+        """
         escape_seq = '_'
-        return re.sub('[^a-zA-Z0-9 \n\.]', escape_seq, tag)
+        return re.sub('[^a-zA-Z0-9 \n\.]', escape_seq, unescaped_string)
 
     def _get_namespace_and_tag(self, pod):
         namespace = self._get_metadata(pod, 'namespace')
