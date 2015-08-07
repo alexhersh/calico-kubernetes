@@ -265,17 +265,12 @@ class NetworkPlugin(object):
             print "using kube-system, allow all"
             return ["allow"], ["allow"]
 
-        # TODO: This method is append-only, not profile replacement, we need to remove default rules
-        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=2')
-        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=1')
-        self.calicoctl('profile', profile_name, 'rule', 'remove', 'outbound', '--at=1')
-
         inbound_rules = [
-            "allow from tag %s" % ns_tag
+            ["allow", "from", "tag", ns_tag]
         ]
 
         outbound_rules = [
-            "allow"
+            ["allow"]
         ]
 
         print("Getting Policy Rules from Annotation of pod %s" % pod)
@@ -283,7 +278,7 @@ class NetworkPlugin(object):
         annotations = self._get_metadata(pod, "annotations")
 
         # Find policy block of annotations
-        if "policy" in annotations.keys():
+        if annotations and "policy" in annotations.keys():
             # Remove Default Rule (Allow Namespace)
             inbound_rules = []
             rules = annotations["policy"]
@@ -341,6 +336,10 @@ class NetworkPlugin(object):
         inbound_rules, outbound_rules = self._generate_rules(pod)
 
         print "Removing Default Rules"
+        # TODO: This method is append-only, not profile replacement, we need to remove default rules
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=2')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=1')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'outbound', '--at=1')
 
         for rule in inbound_rules:
             print 'applying inbound rule \n%s' % rule
@@ -417,7 +416,7 @@ class NetworkPlugin(object):
 
     def _get_namespace_and_tag(self, pod):
         namespace = self._get_metadata(pod, 'namespace')
-        ns_tag = self._escape_chars('%s=%s' % ('Namespace', namespace)) if namespace else None
+        ns_tag = self._escape_chars('%s=%s' % ('namespace', namespace)) if namespace else None
         return namespace, ns_tag
 
     def _label_to_tag(self, label_key, label_value, namespace):
