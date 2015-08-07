@@ -2,21 +2,26 @@
 import json
 import os
 import sys
+from docker import Client
+from docker.errors import APIError
 from subprocess import check_output, CalledProcessError, check_call
 import requests
 from urllib import quote
 import sh
+from pycalico.datastore import IF_PREFIX, DatastoreClient
+from pycalico.util import generate_cali_interface_name, get_host_ips
+from pycalico.datastore_datatypes import Rules
 
-# Append to existing env, to avoid losing PATH etc.
-# Need to edit the path here since calicoctl loads client on import.
+
+DOCKER_VERSION = "1.16"
+
 ETCD_AUTHORITY_ENV = "ETCD_AUTHORITY"
 if ETCD_AUTHORITY_ENV not in os.environ:
     os.environ[ETCD_AUTHORITY_ENV] = 'kubernetes-master:6666'
 print("Using ETCD_AUTHORITY=%s" % os.environ[ETCD_AUTHORITY_ENV])
 
-from pycalico.datastore import IF_PREFIX, DatastoreClient
-from pycalico.util import generate_cali_interface_name, get_host_ips
-
+# Append to existing env, to avoid losing PATH etc.
+# Need to edit the path here since calicoctl loads client on import.
 CALICOCTL_PATH = os.environ.get('CALICOCTL_PATH', '/usr/bin/calicoctl')
 print("Using CALICOCTL_PATH=%s" % CALICOCTL_PATH)
 
@@ -26,11 +31,15 @@ print("Using KUBE_API_ROOT=%s" % KUBE_API_ROOT)
 
 
 class NetworkPlugin(object):
+
     def __init__(self):
         self.pod_name = None
         self.docker_id = None
         self._datastore_client = DatastoreClient()
         self.calicoctl = sh.Command(CALICOCTL_PATH).bake(_env=os.environ)
+        self._docker_client = Client(
+            version=DOCKER_VERSION,
+            base_url=os.getenv("DOCKER_HOST", "unix://var/run/docker.sock"))
 
     def create(self, pod_name, docker_id):
         """"Create a pod."""
@@ -55,11 +64,45 @@ class NetworkPlugin(object):
         self.docker_id = docker_id
 
         print('Deleting container %s with profile %s' % 
-            (self.pod_name, self.docker_id))
+            (self.docker_id, self.pod_name))
 
         # Remove the profile for the workload.
         self.calicoctl('container', 'remove', self.docker_id)
-        self.calicoctl('profile', 'remove', self.pod_name)
+
+        # Delete profile
+        try:
+            self._datastore_client.remove_profile(self.pod_name)
+        except:
+            print "Cannot remove profile %s; Profile cannot be found." % self.pod_name
+
+    def _configure_profile(self, endpoint):
+        """
+        Configure the calico profile for a pod.
+
+        Currently assumes one pod with each name.
+        """
+        profile_name = self.pod_name
+        print('Configuring Pod Profile: %s' % profile_name)
+
+        if self._datastore_client.profile_exists(profile_name):
+            print "Error: Profile with name %s already exists, exiting." % profile_name
+            sys.exit(1)
+        else:
+            self._datastore_client.create_profile(profile_name)
+
+        pod = self._get_pod_config()
+
+        self._apply_rules(profile_name)
+
+        self._apply_tags(profile_name, pod)
+
+        # Also set the profile for the workload.
+        print('Setting profile %s on endpoint %s' %
+              (profile_name, endpoint.endpoint_id))
+        self._datastore_client.set_profiles_on_endpoint(
+            profile_name, endpoint_id=endpoint.endpoint_id
+        )
+        print('Finished configuring profile.')
 
     def _configure_interface(self):
         """Configure the Calico interface for a pod.
@@ -75,10 +118,11 @@ class NetworkPlugin(object):
            compatibility with kube-proxy REDIRECT iptables rules).
         """
         container_ip = self._read_docker_ip()
+        container_id = self._get_container_id(self.docker_id)
         self._delete_docker_interface()
         print('Configuring Calico network interface')
         self.calicoctl('container', 'add', self.docker_id, container_ip, '--interface=eth0')
-        ep = self._datastore_client.get_endpoint(workload_id=self.docker_id)
+        ep = self._datastore_client.get_endpoint(workload_id=container_id)
         interface_name = generate_cali_interface_name(IF_PREFIX, ep.endpoint_id)
         node_ip = self._get_node_ip()
         print('Adding IP %s to interface %s' % (node_ip, interface_name))
@@ -112,7 +156,7 @@ class NetworkPlugin(object):
             return addr
         except IndexError:
             # If both get_host_ips return empty lists, print message and exit.
-            print('No Valid IP Address Found for Host - cannot configure networking for pod %s' % (self.pod_name))
+            print('Error: No Valid IP Address Found for Host - cannot configure networking for pod %s. Exiting' % (self.pod_name))
             sys.exit(1)
 
     def _read_docker_ip(self):
@@ -154,28 +198,6 @@ class NetworkPlugin(object):
 
         # Clean up after ourselves (don't want to leak netns files)
         print(check_output(['rm', netns_file]))
-
-    def _configure_profile(self, endpoint):
-        """
-        Configure the calico profile for a pod.
-
-        Currently assumes one pod with each name.
-        """
-        profile_name = self.pod_name
-        print('Configuring Pod Profile %s' % profile_name)
-        self.calicoctl('profile', 'add', profile_name)
-        pod = self._get_pod_config()
-
-        self._apply_rules(profile_name, pod)
-
-        self._apply_tags(profile_name, pod)
-
-        # Also set the profile for the workload.
-        print('Setting profile %s on endpoint %s' %
-              (profile_name, endpoint.endpoint_id))
-        self.calicoctl('endpoint', endpoint.endpoint_id,
-                       'profile', 'set', profile_name)
-        print('Finished configuring profile.')
 
     def _get_pod_ports(self, pod):
         """
@@ -240,7 +262,7 @@ class NetworkPlugin(object):
         try:
             with open('/var/lib/kubelet/kubernetes_auth') as f:
                 json_string = f.read()
-        except IOError, e:
+        except IOError as e:
             print("Failed to open auth_file (%s), assuming insecure mode" % e)
             return ""
 
@@ -283,7 +305,7 @@ class NetworkPlugin(object):
 
         annotations = self._get_metadata(pod, 'annotations')
 
-        if 'allowFrom' in annotations.keys():
+        if annotations and 'allowFrom' in annotations.keys():
             # Remove Default Rule (Allow Namespace)
             inbound_rules = []
             rules = json.loads(annotations['allowFrom'])
@@ -324,11 +346,16 @@ class NetworkPlugin(object):
         :type profile_name: string
         :return:
         """
-        rules = self._generate_rules(pod)
-        profile_json = self._generate_profile_json(profile_name, rules)
+        try:
+            profile = self._datastore_client.get_profile(profile_name)
+        except:
+            print("Error: Could not apply rules. Profile not found: %s, exiting" % profile_name)
+            sys.exit(1)
 
-        # Pipe the Profile JSON into the calicoctl command to update the rule.
-        self.calicoctl('profile', profile_name, 'rule', 'update', _in=profile_json)
+        rules = self._generate_rules()
+        profile_json = self._generate_profile_json(profile_name, rules)
+        profile.rules = Rules.from_json(profile_json)
+        self._datastore_client.profile_update_rules(profile)
         print('Finished applying rules.')
 
     def _apply_tags(self, profile_name, pod):
@@ -344,26 +371,35 @@ class NetworkPlugin(object):
         """
         print('Applying tags')
 
+        try:
+            labels = pod['metadata']['labels']
+        except KeyError:
+            # If there are no labels, there's no more work to do.
+            print('No labels found in pod %s' % pod)
+            return
+
+        try:
+            profile = self._datastore_client.get_profile(profile_name)
+        except KeyError:
+            print('Error: Could not apply tags. Profile %s could not be found. Exiting' % profile_name)
+            sys.exit(1)
+
         # Grab namespace and create a tag if it exists.
         namespace, ns_tag = self._get_namespace_and_tag(pod)
 
         if ns_tag:
-            try:
-                print('Adding tag %s' % ns_tag) 
-                self.calicoctl('profile', profile_name, 'tag', 'add', ns_tag)
-            except sh.ErrorReturnCode as e:
-                print('Could not create tag %s.\n%s' % (ns_tag, e))
-
+            print('Adding tag %s' % ns_tag) 
+            profile.tags.add(ns_tag)
+           
         # Create tags from labels
         labels = self._get_metadata(pod, 'labels')
         if labels:
             for k, v in labels.iteritems():
                 tag = self._label_to_tag(k, v, namespace)
                 print('Adding tag ' + tag)
-                try:
-                    self.calicoctl('profile', profile_name, 'tag', 'add', tag)
-                except sh.ErrorReturnCode as e:
-                    print('Could not create tag %s.\n%s' % (tag, e))
+                profile.tags.add(tag)
+               
+        self._datastore_client.profile_update_tags(profile)
 
         print('Finished applying tags.')
 
@@ -458,6 +494,16 @@ class NetworkPlugin(object):
 
         return calico_rule
 
+    def _get_container_id(self, container_name):
+        try:
+            info = self._docker_client.inspect_container(container_name)
+        except APIError as e:
+            if e.response.status_code == 404:
+                print("Error: Could not get container ID for %s. Exiting." % container_name)
+            else:
+                print(e.message)
+            sys.exit(1)
+        return info["Id"]
 
 if __name__ == '__main__':
     print('Args: %s' % sys.argv)
