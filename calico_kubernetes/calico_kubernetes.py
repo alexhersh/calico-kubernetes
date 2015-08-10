@@ -326,6 +326,7 @@ class NetworkPlugin(object):
 
     def _generate_profile_json(self, profile_name, rules):
         """
+        DEPRECIATED: Not used in current semantic annotation format
         Given a list of of Calico rules, generate a Calico Profile JSON blob
         implementing those rules.
 
@@ -398,13 +399,6 @@ class NetworkPlugin(object):
         print('Applying tags')
 
         try:
-            labels = pod['metadata']['labels']
-        except KeyError:
-            # If there are no labels, there's no more work to do.
-            print('No labels found in pod %s' % pod)
-            return
-
-        try:
             profile = self._datastore_client.get_profile(profile_name)
         except KeyError:
             print('Error: Could not apply tags. Profile %s could not be found. Exiting' % profile_name)
@@ -424,6 +418,8 @@ class NetworkPlugin(object):
                 tag = self._label_to_tag(k, v, namespace)
                 print('Adding tag ' + tag)
                 profile.tags.add(tag)
+        else: 
+            print('No labels found in pod %s' % pod)
                
         self._datastore_client.profile_update_tags(profile)
 
@@ -436,11 +432,12 @@ class NetworkPlugin(object):
         """
         try:
             val = pod['metadata'][key]
-            print("%s of pod %s:\n%s" % (key, pod, val))
-            return val
         except KeyError:
             print('No %s found in pod %s' % (key, pod))
             return None
+
+        print("%s of pod %s:\n%s" % (key, pod, val))
+        return val
 
     def _escape_chars(self, unescaped_string):
         """
@@ -448,7 +445,7 @@ class NetworkPlugin(object):
         This function uses regex sub to replace SCs with _
         """
         escape_seq = '_'
-        return re.sub('[^a-zA-Z0-9 \n\.]', escape_seq, unescaped_string)
+        return re.sub('[^a-zA-Z0-9\.-]', escape_seq, unescaped_string)
 
     def _get_namespace_and_tag(self, pod):
         namespace = self._get_metadata(pod, 'namespace')
@@ -472,53 +469,6 @@ class NetworkPlugin(object):
         tag = '%s/%s' % (namespace, tag) if namespace else tag
         tag = self._escape_chars(tag)
         return tag
-
-    def _translate_rule(self, kube_rule, namespace):
-        """
-        Given a rule dict from Kubernetes Annotations, 
-        output a rule that is calicoctl profile compliant
-        :param rule: dict of keys relating to policy rules
-        :param namespace: string indicating namespace for pod, None if not available
-        :return: translated dict of keys relating to policy rules for Calico profile
-        :rtype: dict
-        """
-        # kube syntax : calico syntax
-        translation_dictionary = {
-            'srcPorts': 'src_ports',
-            'dstPorts': 'dst_ports',
-            'srcNet': 'src_net',
-            'dstNet': 'dst_net',
-            'action': 'action',
-            'protocol': 'protocol',
-            'icmpType': 'icmp_type'
-        }
-
-        calico_rule = dict()
-
-        # Kubernetes and Calico use different syntax, use a dictionary to translate
-        for kube_key, calico_key in translation_dictionary.iteritems():
-            if kube_key in kube_rule.keys():
-                calico_rule[calico_key] = kube_rule.pop(kube_key)
-
-        # Label selectors need to translate to tags
-        if 'labels' in kube_rule.keys():
-            # Iterate through 'labels' dict
-            for k, v in kube_rule['labels'].iteritems():
-                # For now, we should only see have src_tag key
-                if 'src_tag' not in calico_rule.keys():
-                    tag = self._label_to_tag(k, v, namespace)
-                    calico_rule['src_tag'] = tag
-                else:
-                    print "More than one label specified for policy rule. Multi-tag selection not supported in Calico"
-                    sys.exit(1)
-
-            kube_rule.pop('labels')
-
-        # As Calico rules are translated, kubernetes rules are popped. Any that remain are tossed out.
-        if kube_rule :
-            print "Rejected Rules in Kubernetes Annotations \n%s" % kube_rule
-
-        return calico_rule
 
     def _get_container_id(self, container_name):
         try:
