@@ -8,10 +8,10 @@ from subprocess import check_output, CalledProcessError, check_call
 import requests
 from urllib import quote
 import sh
+import re
 from pycalico.datastore import IF_PREFIX, DatastoreClient
 from pycalico.util import generate_cali_interface_name, get_host_ips
 from pycalico.datastore_datatypes import Rules
-
 
 DOCKER_VERSION = "1.16"
 
@@ -92,7 +92,7 @@ class NetworkPlugin(object):
 
         pod = self._get_pod_config()
 
-        self._apply_rules(profile_name)
+        self._apply_rules(profile_name, pod)
 
         self._apply_tags(profile_name, pod)
 
@@ -272,47 +272,55 @@ class NetworkPlugin(object):
 
     def _generate_rules(self, pod):
         """
-        Generate the Profile rules that have been specified on the Pod's ports.
+        Generate Rules takes human readable policy strings in annotations
+        and creates argument arrays for calicoctl
 
-        We only create a Rule for a port if it has 'allowFrom' specified.
-
-        The Rule is structured to match the Calico etcd format.
-
-        :return list() rules: the rules to be added to the Profile.
+        :return two lists of rules(arg lists): inbound list of rules (arg lists)
+        outbound list of rules (arg lists)
         """
 
         namespace, ns_tag = self._get_namespace_and_tag(pod)
 
         # kube-system services need to be accessed by all namespaces
-        if namespace is "kube-system" :
+        if namespace == "kube-system" :
             print "using kube-system, allow all"
-            return [{"action": "allow"}], [{"action": "allow"}]
+            return [["allow"]], [["allow"]]
 
         inbound_rules = [
-            {
-                "action": "allow",
-                "src_tag": ns_tag
-            }
+            ["allow", "from", "tag", ns_tag]
         ]
 
         outbound_rules = [
-            {
-                "action": "allow"
-            }
+            ["allow"]
         ]
 
-        print('Getting Policy Rules from Annotation of pod %s' % pod)
+        print("Getting Policy Rules from Annotation of pod %s" % pod)
 
-        annotations = self._get_metadata(pod, 'annotations')
+        annotations = self._get_metadata(pod, "annotations")
 
-        if annotations and 'allowFrom' in annotations.keys():
+        # Find policy block of annotations
+        if annotations and "policy" in annotations.keys():
             # Remove Default Rule (Allow Namespace)
             inbound_rules = []
-            rules = json.loads(annotations['allowFrom'])
-            for rule in rules:
-                rule['action'] = 'allow'
-                rule = self._translate_rule(rule, namespace)
-                inbound_rules.append(rule)
+            rules = annotations["policy"]
+
+            # Rules separated by semicolons
+            for rule in rules.split(";"):
+                args = rule.split(" ")
+
+                # Replace labels with tags
+                # key=value -> namespace_key_value
+                if 'label' in args:
+                    label_ind = args.index('label')
+                    args[label_ind] = 'tag'
+                    label = args[label_ind + 1]
+                    key, value = label.split('=')
+                    tag = self._label_to_tag(key, value, namespace)
+                    args[label_ind + 1] = tag
+
+                # Remove null args and add to rule list
+                args = filter(None, args)
+                inbound_rules.append(args)
 
         return inbound_rules, outbound_rules
 
@@ -352,10 +360,28 @@ class NetworkPlugin(object):
             print("Error: Could not apply rules. Profile not found: %s, exiting" % profile_name)
             sys.exit(1)
 
-        rules = self._generate_rules()
-        profile_json = self._generate_profile_json(profile_name, rules)
-        profile.rules = Rules.from_json(profile_json)
-        self._datastore_client.profile_update_rules(profile)
+        inbound_rules, outbound_rules = self._generate_rules(pod)
+
+        print "Removing Default Rules"
+        # TODO: This method is append-only, not profile replacement, we need to remove default rules
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=2')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'inbound', '--at=1')
+        self.calicoctl('profile', profile_name, 'rule', 'remove', 'outbound', '--at=1')
+
+        for rule in inbound_rules:
+            print 'applying inbound rule \n%s' % rule
+            try:
+                self.calicoctl('profile', profile_name, 'rule', 'add', 'inbound', rule)
+            except sh.ErrorReturnCode as e:
+                print('Could not create rule %s.\n%s' % (rule, e))
+
+        for rule in outbound_rules:
+            print 'applying outbound rule \n%s' % rule
+            try:
+                self.calicoctl('profile', profile_name, 'rule', 'add', 'outbound', rule)
+            except sh.ErrorReturnCode as e:
+                print('Could not create rule %s.\n%s' % (rule, e))
+            
         print('Finished applying rules.')
 
     def _apply_tags(self, profile_name, pod):
@@ -426,7 +452,7 @@ class NetworkPlugin(object):
 
     def _get_namespace_and_tag(self, pod):
         namespace = self._get_metadata(pod, 'namespace')
-        ns_tag = self._escape_chars('%s=%s' % ('Namespace', namespace)) if namespace else None
+        ns_tag = self._escape_chars('%s=%s' % ('namespace', namespace)) if namespace else None
         return namespace, ns_tag
 
     def _label_to_tag(self, label_key, label_value, namespace):
