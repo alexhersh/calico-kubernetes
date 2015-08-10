@@ -92,7 +92,7 @@ class NetworkPlugin(object):
 
         pod = self._get_pod_config()
 
-        self._apply_rules(profile_name)
+        self._apply_rules(profile_name, pod)
 
         self._apply_tags(profile_name, pod)
 
@@ -282,9 +282,9 @@ class NetworkPlugin(object):
         namespace, ns_tag = self._get_namespace_and_tag(pod)
 
         # kube-system services need to be accessed by all namespaces
-        if namespace is "kube-system" :
+        if namespace == "kube-system" :
             print "using kube-system, allow all"
-            return ["allow"], ["allow"]
+            return [["allow"]], [["allow"]]
 
         inbound_rules = [
             ["allow", "from", "tag", ns_tag]
