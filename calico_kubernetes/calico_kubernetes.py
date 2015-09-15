@@ -40,13 +40,14 @@ CALICOCTL_PATH = os.environ.get('CALICOCTL_PATH', '/usr/bin/calicoctl')
 KUBE_API_ROOT = os.environ.get('KUBE_API_ROOT',
                                'http://kubernetes-master:8080/api/v1/')
 
-# Allow the user to enable/disable namespace isolation policy
-DEFAULT_POLICY = os.environ.get('DEFAULT_POLICY', 'allow')
-
 # Flag to indicate whether or not to use Calico IPAM.
 # If False, use the default docker container ip address to create container.
 # If True, use libcalico's auto_assign IPAM to create container.
 CALICO_IPAM = os.environ.get('CALICO_IPAM', 'false')
+
+CALICO_POLICY = os.environ.get('CALICO_POLICY', 'false')
+
+CALICO_NETWORKING = os.environ.get('CALICO_NETWORKING', 'true')
 
 
 class NetworkPlugin(object):
@@ -242,10 +243,11 @@ class NetworkPlugin(object):
             self._datastore_client.release_ips(set(ip_list))
             sys.exit(1)
 
-        # Create the veth, move into the container namespace, add the IP and
-        # set up the default routes.
-        logger.info("Creating the veth with namespace pid %s on interface name %s", pid, interface)
-        ep.mac = ep.provision_veth(netns.PidNamespace(pid), interface)
+        if CALICO_NETWORKING == 'true':
+            # Create the veth, move into the container namespace, add the IP and
+            # set up the default routes.
+            logger.info("Creating the veth with namespace pid %s on interface name %s", pid, interface)
+            ep.mac = ep.provision_veth(netns.PidNamespace(pid), interface)
 
         logger.info("Setting mac address %s to endpoint %s", ep.mac, ep.name)
         self._datastore_client.set_endpoint(ep)
@@ -277,7 +279,6 @@ class NetworkPlugin(object):
             except RuntimeError as err:
                 logger.error("Cannot auto assign IPAddress: %s", err.message)
                 sys.exit(1)
-
         else:
             logger.info("Using docker assigned IP address")
             ip = self._read_docker_ip()
@@ -312,12 +313,13 @@ class NetworkPlugin(object):
         self._datastore_client.release_ips(ip_set)
 
         # Remove the veth interface from endpoint
-        logger.info("Removing veth interface from endpoint %s", endpoint.name)
-        try:
-            netns.remove_veth(endpoint.name)
-        except CalledProcessError:
-            logger.exception("Could not remove veth interface from endpoint %s",
-                           endpoint.name)
+        if CALICO_NETWORKING == 'true':
+            logger.info("Removing veth interface from endpoint %s", endpoint.name)
+            try:
+                netns.remove_veth(endpoint.name)
+            except CalledProcessError:
+                logger.exception("Could not remove veth interface from endpoint %s",
+                                 endpoint.name)
 
         # Remove the container/endpoint from the datastore.
         try:
@@ -477,60 +479,22 @@ class NetworkPlugin(object):
 
     def _generate_rules(self, pod):
         """
-        Generate Rules takes human readable policy strings in annotations
-        and creates argument arrays for calicoctl
+        Returns two lists of rules (inbound and outbound) based on the CALICO_POLICY
+        environment variable.
+
+        If Calico policy is being used (CALICO_POLICY = true) set rules to reject.
+        If Calico policy is not being used (CALICO_POLICY = false) set rules to allow.
+        The daemon will handle setting specific rules.
 
         :return two lists of rules(arg lists): inbound list of rules (arg lists)
         outbound list of rules (arg lists)
         """
-
-        ns_tag = self._get_namespace_tag(pod)
-
-        # kube-system services need to be accessed by all namespaces
-        if self.namespace == "kube-system" :
-            logger.info("Pod %s belongs to the kube-system namespace - "
-                        "allow all inbound and outbound traffic", pod)
-            return [["allow"]], [["allow"]]
-
-        if self.namespace and DEFAULT_POLICY == 'ns_isolation':
-            inbound_rules = [["allow", "from", "tag", ns_tag]]
-            outbound_rules = [["allow"]]
+        if CALICO_POLICY == 'true':
+            inbound_rules = [["reject"]]
+            outbound_rules = [["reject"]]
         else:
             inbound_rules = [["allow"]]
             outbound_rules = [["allow"]]
-
-        logger.info("Getting Policy Rules from Annotation of pod %s", pod)
-
-        annotations = self._get_metadata(pod, "annotations")
-
-        # Find policy block of annotations
-        if annotations and POLICY_ANNOTATION_KEY in annotations:
-            # Remove Default Rule (Allow Namespace)
-            inbound_rules = []
-            rules = annotations[POLICY_ANNOTATION_KEY]
-
-            # Rules separated by semicolons
-            for rule in rules.split(";"):
-                args = rule.split(" ")
-
-                # Labels are declared in the annotations with the format 'label X=Y'
-                # These must be converted into format 'tag NAMSPACE_X_Y' to be parsed by calicoctl.
-                if 'label' in args:
-                    # Replace arg 'label' with arg 'tag'
-                    label_ind = args.index('label')
-                    args[label_ind] = 'tag'
-
-                    # Split given label 'key=value' into components 'key', 'value'
-                    label = args[label_ind + 1]
-                    key, value = label.split('=')
-
-                    # Compose Calico tag out of key, value components
-                    tag = self._label_to_tag(key, value)
-                    args[label_ind + 1] = tag
-
-                # Remove empty strings and add to rule list
-                args = filter(None, args)
-                inbound_rules.append(args)
 
         return inbound_rules, outbound_rules
 
@@ -708,7 +672,8 @@ if __name__ == '__main__':
         logger.info("Using CALICOCTL_PATH=%s", CALICOCTL_PATH)
         logger.info("Using KUBE_API_ROOT=%s", KUBE_API_ROOT)
         logger.info("Using CALICO_IPAM=%s", CALICO_IPAM)
-        logger.info("Using DEFAULT_POLICY=%s", DEFAULT_POLICY)
+        logger.info("Using CALICO_POLICY=%s", CALICO_POLICY)
+        logger.info("Using CALICO_NETWORKING=%s", CALICO_NETWORKING)
 
         if mode == 'setup':
             logger.info('Executing Calico pod-creation hook')
