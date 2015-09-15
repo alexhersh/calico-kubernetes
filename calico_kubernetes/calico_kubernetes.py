@@ -243,11 +243,24 @@ class NetworkPlugin(object):
             self._datastore_client.release_ips(set(ip_list))
             sys.exit(1)
 
+        namespace = netns.PidNamespace(pid)
+
         if CALICO_NETWORKING == 'true':
             # Create the veth, move into the container namespace, add the IP and
             # set up the default routes.
             logger.info("Creating the veth with namespace pid %s on interface name %s", pid, interface)
-            ep.mac = ep.provision_veth(netns.PidNamespace(pid), interface)
+            ep.mac = ep.provision_veth(namespace, interface)
+        else:
+            try:
+                ep.name = self._get_veth(namespace, interface)
+            except:
+                logger.exception("Unable to find veth in namespace %s with interface %s",
+                                 namespace, interface)
+                self._datastore_client.release_ips(set(ip_list))
+                self._datastore_client.remove_workload(HOSTNAME, ORCHESTRATOR_ID, self.docker_id)
+                sys.exit(1)
+            ep.ipv4_gateway = IPAddress("172.17.42.1")
+            ep.mac = netns.get_ns_veth_mac(namespace, interface)
 
         logger.info("Setting mac address %s to endpoint %s", ep.mac, ep.name)
         self._datastore_client.set_endpoint(ep)
@@ -436,6 +449,33 @@ class NetworkPlugin(object):
             raise KeyError('Pod not found: ' + self.pod_name)
         logger.debug('Got pod data %s', this_pod)
         return this_pod
+
+    def _get_veth(namespace, interface):
+        """
+        Determine the name if the interface in the host namespace corresponding
+        to the opposite end of the veth pair for the specific interface in a
+        container.
+        :param container_id:  The ID or name of the container
+        :param interface:  The name of the interface in the container
+        """
+        try:
+            with netns.NamedNamespace(namespace) as ns:
+                rc = ns.check_output(["ip", "link", "show", interface])
+                container_index = int(rc.split(":")[0].strip())
+        except CalledProcessError:
+            logger.exception("Unable to find interface %s", interface)
+            sys.exit(1)
+        except netns.NamespaceError:
+            logger.exception("Unable to find container")
+            sys.exit(1)
+
+        # The veth index on the host side is 1+ the index on the container side.
+        host_index = container_index + 1
+
+        # List the host interfaces and search for the one with the correct index.
+        interfaces = sh.ip(["link", "show"])
+        match = re.search("%d:\s*([^:]*):" % host_index, str(interfaces))
+        return match.group(1)
 
     def _get_api_path(self, path):
         """Get a resource from the API specified API path.
