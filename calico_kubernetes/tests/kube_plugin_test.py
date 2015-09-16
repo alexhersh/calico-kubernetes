@@ -111,21 +111,17 @@ class NetworkPluginTest(unittest.TestCase):
                 patch.object(self.plugin, '_delete_docker_interface',
                     autospec=True) as m_delete_docker_interface, \
                 patch.object(self.plugin, '_container_add',
-                    autospec=True) as m_container_add, \
-                patch.object(calico_kubernetes, 'generate_cali_interface_name',
-                    autospec=True) as m_generate_cali_interface_name, \
-                patch.object(self.plugin, '_get_node_ip',
-                    autospec=True) as m_get_node_ip, \
-                patch.object(calico_kubernetes, 'check_call',
-                    autospec=True) as m_check_call:
+                    autospec=True) as m_container_add,\
+                patch.object(self.plugin, '_configure_calico_interface',
+                    autospec=True) as m_configure_calico_interface, \
+                patch.object(self.plugin, '_configure_docker_interface',
+                    autospec=True) as m_configure_docker_interface:
             # Set up mock objects
             m_get_container_pid.return_value = 'container_pid'
             m_read_docker_ip.return_value = IPAddress('1.1.1.1')
             endpoint = Endpoint(TEST_HOST, TEST_ORCH_ID, '1234', '5678',
                                 'active', 'mac')
             m_container_add.return_value = endpoint
-            m_generate_cali_interface_name.return_value = 'interface_name'
-            m_get_node_ip.return_value = '1.2.3.4'
 
             # Set up args
             self.plugin.pod_name = 'pod1'
@@ -137,30 +133,20 @@ class NetworkPluginTest(unittest.TestCase):
 
             # Assert
             m_get_container_pid.assert_called_once_with(container_name)
-            m_delete_docker_interface.assert_called_once_with()
             m_container_add.assert_called_once_with('container_pid', 'eth0')
-            m_generate_cali_interface_name.assert_called_once_with(
-                IF_PREFIX, endpoint.endpoint_id)
-            m_get_node_ip.assert_called_once_with()
-            m_check_call.assert_called_once_with(
-                ['ip', 'addr', 'add', '1.2.3.4' + '/32',
-                'dev', 'interface_name'])
             self.assertEqual(return_val, endpoint)
-
+            m_configure_calico_interface.assert_called_once_with(endpoint, 'container_pid', 'eth0')
 
     def test_container_add(self):
         with patch.object(self.plugin, '_datastore_client',
                 autospec=True) as m_datastore_client,\
             patch.object(self.plugin, '_validate_container_state',
                 autospec=True) as m_validate_container_state, \
-            patch('calico_kubernetes.calico_kubernetes.netns.PidNamespace', autospec=True) as m_pid_ns,\
             patch.object(self.plugin, '_read_docker_ip', autospec=True) as m_read_docker_ip:
             # Set up mock objs
             m_datastore_client.get_endpoint.side_effect = KeyError
             endpoint = Endpoint(TEST_HOST, TEST_ORCH_ID, '1234', '5678',
                                 'active', 'mac')
-            endpoint.provision_veth = Mock()
-            endpoint.provision_veth.return_value = 'new_mac'
             m_datastore_client.create_endpoint.return_value = endpoint
 
             # Set up arguments
@@ -182,9 +168,6 @@ class NetworkPluginTest(unittest.TestCase):
                 workload_id=self.plugin.docker_id
             )
             m_validate_container_state.assert_called_once_with(container_name)
-            m_datastore_client.set_endpoint.assert_called_once_with(endpoint)
-            endpoint.provision_veth.assert_called_once_with(m_pid_ns(pid), interface)
-            self.assertEqual(endpoint.mac, 'new_mac')
             self.assertEqual(test_return, endpoint)
 
     def test_container_add_container_exists(self):
