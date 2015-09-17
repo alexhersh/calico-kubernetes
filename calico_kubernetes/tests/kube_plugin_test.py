@@ -105,22 +105,23 @@ class NetworkPluginTest(unittest.TestCase):
             m_datastore_client.remove_profile(profile_name)
 
     def test_configure_interface(self):
-        with patch.object(self.plugin, '_read_docker_ip',
-                    autospec=True) as m_read_docker_ip, \
-                patch.object(self.plugin, '_get_container_pid', autospec=True) as m_get_container_pid, \
-                patch.object(self.plugin, '_delete_docker_interface',
-                    autospec=True) as m_delete_docker_interface, \
-                patch.object(self.plugin, '_container_add',
-                    autospec=True) as m_container_add,\
-                patch.object(self.plugin, '_configure_calico_interface',
-                    autospec=True) as m_configure_calico_interface, \
-                patch.object(self.plugin, '_configure_docker_interface',
-                    autospec=True) as m_configure_docker_interface:
+        with patch.object(self.plugin, '_get_container_pid',
+                autospec=True) as m_get_container_pid, \
+            patch.object(self.plugin, '_delete_docker_interface',
+                autospec=True) as m_delete_docker_interface, \
+            patch.object(self.plugin, '_datastore_client',
+                autospec=True) as m_datastore_client,\
+            patch.object(self.plugin, '_container_add',
+                autospec=True) as m_container_add, \
+            patch.object(self.plugin, '_get_node_ip',
+                autospec=True) as m_get_node_ip, \
+            patch.object(calico_kubernetes, 'check_call',
+                    autospec=True) as m_check_call:
             # Set up mock objects
             m_get_container_pid.return_value = 'container_pid'
-            m_read_docker_ip.return_value = IPAddress('1.1.1.1')
             endpoint = Endpoint(TEST_HOST, TEST_ORCH_ID, '1234', '5678',
                                 'active', 'mac')
+            endpoint.provision_veth = Mock()
             m_container_add.return_value = endpoint
 
             # Set up args
@@ -135,7 +136,6 @@ class NetworkPluginTest(unittest.TestCase):
             m_get_container_pid.assert_called_once_with(container_name)
             m_container_add.assert_called_once_with('container_pid', 'eth0')
             self.assertEqual(return_val, endpoint)
-            m_configure_calico_interface.assert_called_once_with(endpoint, 'container_pid', 'eth0')
 
     def test_container_add(self):
         with patch.object(self.plugin, '_datastore_client',

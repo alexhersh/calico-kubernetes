@@ -18,7 +18,6 @@ from pycalico.datastore import IF_PREFIX, DatastoreClient
 from pycalico.util import generate_cali_interface_name, get_host_ips
 from pycalico.ipam import IPAMClient
 from pycalico.block import AlreadyAssignedError
-from pycalico.netns import NamespaceError
 
 logger = logging.getLogger(__name__)
 pycalico_logger = logging.getLogger(pycalico.__name__)
@@ -47,8 +46,6 @@ KUBE_API_ROOT = os.environ.get('KUBE_API_ROOT',
 CALICO_IPAM = os.environ.get('CALICO_IPAM', 'false')
 
 CALICO_POLICY = os.environ.get('CALICO_POLICY', 'false')
-
-CALICO_NETWORKING = os.environ.get('CALICO_NETWORKING', 'true')
 
 
 class NetworkPlugin(object):
@@ -173,48 +170,38 @@ class NetworkPlugin(object):
 
     def _configure_interface(self):
         """
-        Add a new container and interface to Calico
-
-        Interfacing depends on environment variable CALICO_NETWORKING
-        If CALICO_NETWORKING is true, configure the Calico interface for the container
-        If CALICO_NETWORKING is false, utilize the Docker interface
-        """
-        # Set up parameters
-        container_pid = self._get_container_pid(self.docker_id)
-        interface = 'eth0'
-        ep = self._container_add(container_pid, interface)
-
-        if CALICO_NETWORKING == 'true':
-            self._configure_calico_interface(ep, container_pid, interface)
-        else:
-            self._configure_docker_interface(ep, container_pid, interface)
-
-        return ep
-
-    def _configure_calico_interface(self, endpoint, pid, interface):
-        """
         Configure the Calico interface for a pod.
 
         This involves the following steps:
-        1) Delete the docker-assigned veth pair that's attached to the docker
+        1) Obtain container PID and create a Calico endpoint using PID
+        2) Delete the docker-assigned veth pair that's attached to the docker
            bridge
-        2) Create a new calico veth pair, using the docker-assigned IP for the
+        3) Create a new calico veth pair, using the docker-assigned IP for the
            end in the container's namespace
-        3) Assign the node's IP to the host end of the veth pair (required for
+        4) Assign the node's IP to the host end of the veth pair (required for
            compatibility with kube-proxy REDIRECT iptables rules).
         """
         logger.info('Configuring Calico network interface')
-        # Create the veth, move into the container namespace, add the IP and
-        # set up the default routes.
+
+        # Set up parameters
+        container_pid = self._get_container_pid(self.docker_id)
+        interface = 'eth0'
+        endpoint = self._container_add(container_pid, interface)
+        namespace = netns.PidNamespace(container_pid)
+
+        # Delete the existing veth connecting to the docker bridge.
         self._delete_docker_interface()
 
-        logger.info("Creating the veth with namespace pid %s on interface name %s", pid, interface)
+        # Create the veth, move into the container namespace, add the IP and
+        # set up the default routes.
+        logger.info("Creating the veth with namespace pid %s on interface name %s", container_pid, interface)
         endpoint.mac = endpoint.provision_veth(namespace, interface)
 
+        # Update the endpoint to set the new mac address
         logger.info("Setting mac address %s to endpoint %s", endpoint.mac, endpoint.name)
         self._datastore_client.set_endpoint(endpoint)
 
-        interface_name = generate_cali_interface_name(IF_PREFIX, ep.endpoint_id)
+        interface_name = generate_cali_interface_name(IF_PREFIX, endpoint.endpoint_id)
         node_ip = self._get_node_ip()
 
         # This is slightly tricky. Since the kube-proxy sometimes
@@ -233,35 +220,7 @@ class NetworkPlugin(object):
 
         logger.info('Finished configuring Calico network interface')
 
-    def _configure_docker_interface(self, endpoint, pid, interface):
-        """
-        Configure the Docker interface for a container.
-
-        Set the name on the endpoint to the veth
-        Set the ipv4 gateway on the endpoint to the docker0 inet address
-        Set the mac on the endpoint
-
-        :param endpoint:
-        :param pid:
-        :param interface:
-        """
-        logger.info('Configuring Docker network interface')
-        try:
-            namespace = netns.PidNamespace(pid)
-        except NamespaceError:
-            logger.exception("Unable to find namespace with pid %s", pid)
-            self._datastore_client.release_ips(self._get_ipset_from_endpoint(endpoint))
-            self._datastore_client.remove_workload(HOSTNAME, ORCHESTRATOR_ID, self.docker_id)
-            sys.exit(1)
-
-        endpoint.name = self._get_veth(namespace, interface)
-        endpoint.ipv4_gateway = IPAddress("172.17.42.1")
-        endpoint.mac = netns.get_ns_veth_mac(namespace, interface)
-
-        logger.info("Setting mac address %s to endpoint %s", endpoint.mac, endpoint.name)
-        self._datastore_client.set_endpoint(endpoint)
-
-        logger.info('Finished configuring Docker network interface')
+        return endpoint
 
     def _container_add(self, pid, interface):
         """
@@ -313,7 +272,7 @@ class NetworkPlugin(object):
         :return IPAddress which has been assigned
         """
         if CALICO_IPAM == 'true':
-            # Assign ip address through IPAM Client
+            # Assign IP address through IPAM Client
             logger.info("Using Calico IPAM")
             try:
                 ip_list, ipv6_addrs = self._datastore_client.auto_assign_ips(
@@ -356,13 +315,12 @@ class NetworkPlugin(object):
         self._datastore_client.release_ips(ip_set)
 
         # Remove the veth interface from endpoint
-        if CALICO_NETWORKING == 'true':
-            logger.info("Removing veth interface from endpoint %s", endpoint.name)
-            try:
-                netns.remove_veth(endpoint.name)
-            except CalledProcessError:
-                logger.exception("Could not remove veth interface from endpoint %s",
-                                 endpoint.name)
+        logger.info("Removing veth interface from endpoint %s", endpoint.name)
+        try:
+            netns.remove_veth(endpoint.name)
+        except CalledProcessError:
+            logger.exception("Could not remove veth interface from endpoint %s",
+                             endpoint.name)
 
         # Remove the container/endpoint from the datastore.
         try:
@@ -750,7 +708,6 @@ if __name__ == '__main__':
         logger.info("Using KUBE_API_ROOT=%s", KUBE_API_ROOT)
         logger.info("Using CALICO_IPAM=%s", CALICO_IPAM)
         logger.info("Using CALICO_POLICY=%s", CALICO_POLICY)
-        logger.info("Using CALICO_NETWORKING=%s", CALICO_NETWORKING)
 
         if mode == 'setup':
             logger.info('Executing Calico pod-creation hook')
