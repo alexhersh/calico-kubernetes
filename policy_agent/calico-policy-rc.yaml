@@ -29,4 +29,3 @@ spec:
             cpu: 100m
             memory: 50Mi
         name: policyagent
-      dnsPolicy: Default  # Don't use cluster DNS.
