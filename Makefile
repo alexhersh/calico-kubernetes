@@ -30,9 +30,10 @@ binary: kubernetesbuild.created
 	calico/kubernetes-build pyinstaller calico_kubernetes/calico_kubernetes.py -a -F -s --clean
 
 ut: kubernetesbuild.created
-	docker run --rm -v `pwd`/calico_kubernetes:/code/calico_kubernetes \
-	-v `pwd`/nose.cfg:/code/nose.cfg \
+	docker run --rm \
+	-v `pwd`/calico_kubernetes:/code/calico_kubernetes \
 	-v `pwd`/common:/code/common \
+	-v `pwd`/nose.cfg:/code/nose.cfg \
 	calico/kubernetes-build bash -c \
 	'>/dev/null 2>&1 & PYTHONPATH=/code \
 	nosetests calico_kubernetes/tests -c nose.cfg'
@@ -48,10 +49,11 @@ ut-circle: binary
 	docker run \
 	-v `pwd`/calico_kubernetes:/code/calico_kubernetes \
 	-v `pwd`/common:/code/common \
+	-v `pwd`/nose.cfg:/code/nose.cfg \
 	-v $(CIRCLE_TEST_REPORTS):/circle_output \
 	-e COVERALLS_REPO_TOKEN=$(COVERALLS_REPO_TOKEN) \
 	calico/kubernetes-build bash -c \
-	'>/dev/null 2>&1 & \
+	'>/dev/null 2>&1 & PYTHONPATH=/code \
 	nosetests calico_kubernetes/tests -c nose.cfg \
 	--with-xunit --xunit-file=/circle_output/output.xml; RC=$$?;\
 	[[ ! -z "$$COVERALLS_REPO_TOKEN" ]] && coveralls || true; exit $$RC'
