@@ -14,7 +14,7 @@
 
 FROM debian:wheezy
 
-WORKDIR /code/
+WORKDIR /main/
 
 # Git is installed to allow pip installation from a github repo and also so
 # that the right branch can be included if uploading coverage.
@@ -22,11 +22,12 @@ RUN apt-get update && \
     apt-get install -qy curl python-dev python-pip git libffi-dev libssl-dev
 
 # Install requirements.
-ADD requirements.txt /code/
+ADD requirements.txt /main/
 RUN pip install -r requirements.txt
+RUN rm -f requirements.txt
 
 # Add the policy-agent code.
-ADD policy_agent.py /code/
+ADD dist/policy_agent /main/
 
 # Set command to run the policy agent
-CMD ["python", "/code/policy_agent.py"]
+CMD ["/main/policy_agent"]
