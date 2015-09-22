@@ -31,6 +31,7 @@ _datastore_client = DatastoreClient()
 
 
 class PolicyAgent():
+
     """
     The Policy Agent is responsible for maintaining Watch Threads/Queues and internal resource lists.
     """
@@ -38,15 +39,15 @@ class PolicyAgent():
     def __init__(self):
         self.watcher_queue = Queue.Queue()
 
-        self.namespaces = dict()
-        self.services = dict()
-        self.pods = dict()
-        self.endpoints = dict()
+        self.namespaces = {}
+        self.services = {}
+        self.pods = {}
+        self.endpoints = {}
 
-        self.changed_namespaces = dict()
-        self.changed_services = dict()
-        self.changed_pods = dict()
-        self.changed_endpoints = dict()
+        self.changed_namespaces = {}
+        self.changed_services = {}
+        self.changed_pods = {}
+        self.changed_endpoints = {}
 
         self.namespace_watcher = None
         self.service_watcher = None
@@ -55,7 +56,6 @@ class PolicyAgent():
 
         self.init_lists()
         self.init_threads()
-
 
     def run(self):
         """
@@ -82,16 +82,24 @@ class PolicyAgent():
         initEndpoints = _get_api_list("endpoints")
 
         for ns in initNamespaces["items"]:
-            self.process_resource(action=CMD_ADDED, kind=KIND_NAMESPACE, target=ns)
+            self.process_resource(action=CMD_ADDED,
+                                  kind=KIND_NAMESPACE,
+                                  target=ns)
 
         for svc in initServices["items"]:
-            self.process_resource(action=CMD_ADDED, kind=KIND_SERVICE, target=svc)
+            self.process_resource(action=CMD_ADDED,
+                                  kind=KIND_SERVICE,
+                                  target=svc)
 
         for pod in initPods["items"]:
-            self.process_resource(action=CMD_ADDED, kind=KIND_POD, target=pod)
+            self.process_resource(action=CMD_ADDED,
+                                  kind=KIND_POD,
+                                  target=pod)
 
         for ep in initEndpoints["items"]:
-            self.process_resource(action=CMD_ADDED, kind=KIND_ENDPOINTS, target=ep)
+            self.process_resource(action=CMD_ADDED,
+                                  kind=KIND_ENDPOINTS,
+                                  target=ep)
 
         self.nsResourceVersion = initEndpoints["metadata"]["resourceVersion"]
         self.svcResourceVersion = initServices["metadata"]["resourceVersion"]
@@ -111,13 +119,13 @@ class PolicyAgent():
         assert not self.endpoints_watcher
 
         self.namespace_watcher = Thread(target=_keep_watch,
-                                args=(self.watcher_queue, "namespaces", self.nsResourceVersion))
+                                        args=(self.watcher_queue, "namespaces", self.nsResourceVersion))
         self.service_watcher = Thread(target=_keep_watch,
-                                 args=(self.watcher_queue, "services", self.svcResourceVersion))
+                                      args=(self.watcher_queue, "services", self.svcResourceVersion))
         self.pod_watcher = Thread(target=_keep_watch,
-                                 args=(self.watcher_queue, "pods", self.poResourceVersion))
+                                  args=(self.watcher_queue, "pods", self.poResourceVersion))
         self.endpoints_watcher = Thread(target=_keep_watch,
-                                  args=(self.watcher_queue, "endpoints", self.epResourceVersion))
+                                        args=(self.watcher_queue, "endpoints", self.epResourceVersion))
 
         self.namespace_watcher.daemon = True
         self.service_watcher.daemon = True
@@ -142,13 +150,13 @@ class PolicyAgent():
                 if r_type == CMD_DELETED:
                     self.delete_resource(kind=r_kind, target=r_obj)
                 elif r_type in [CMD_ADDED, CMD_MODIFIED]:
-                    self.process_resource(
-                        action=r_type, kind=r_kind, target=r_obj)
+                    self.process_resource(action=r_type,
+                                          kind=r_kind,
+                                          target=r_obj)
                 else:
                     _log.error("Event from watch not recognized: %s" % r_type)
             else:
                 _log.error("Resource %s not Pod, Service, Endpoints or Namespace" % r_kind)
-
         except Queue.Empty:
             self.resync()
 
@@ -163,22 +171,17 @@ class PolicyAgent():
         if kind == KIND_NAMESPACE:
             resource_pool = self.changed_namespaces
             obj = Namespace(target)
-
         elif kind == KIND_SERVICE:
             resource_pool = self.changed_services
             obj = Service(target)
-
         elif kind == KIND_POD:
             resource_pool = self.changed_pods
             obj = Pod(target)
-
         elif kind == KIND_ENDPOINTS:
             resource_pool = self.changed_endpoints
             obj = Endpoints(target)
-
         else:
-            _log.error(
-                "resource %s not Pod, Service, Endpoints or Namespace" % kind)
+            _log.error("Resource %s not Pod, Service, Endpoints or Namespace" % kind)
             return
 
         target_key = obj.key
@@ -187,22 +190,19 @@ class PolicyAgent():
             if target_key not in resource_pool:
                 resource_pool[target_key] = obj
                 _log.info("%s %s added to Calico store" % (kind, target_key))
-
             else:
-                _log.error("Tried to Add %s %s, but it was already in bin" %
+                _log.error("Tried to Add %s %s, but it was already in bin" % \
                            (kind, target_key))
-
         elif action == CMD_MODIFIED:
             if target_key in resource_pool:
                 _log.info("Updating %s %s" % (kind, target_key))
                 resource_pool[target_key] = obj
-
             else:
                 _log.warning("Tried to Modify %s %s, but it was not in bin. "
-                             "Treating as Addition" %
-                             (kind, target_key))
-                self.process_resource(action=CMD_ADDED, kind=kind, target=target)
-
+                             "Treating as Addition" % (kind, target_key))
+                self.process_resource(action=CMD_ADDED,
+                                      kind=kind,
+                                      target=target)
         else:
             _log.error("Event in process_resource not recognized: %s" % r_type)
 
@@ -230,9 +230,8 @@ class PolicyAgent():
             _log.info("%s %s deleted from Calico store" % (kind, target_key))
 
         else:
-            _log.error(
-                "Tried to Delete %s %s but it was not in bin" %
-                (kind, target_key))
+            _log.error("Tried to Delete %s %s but it was not in bin" % \
+                       (kind, target_key))
 
     def match_pod(self, namespace, name):
         try:
@@ -245,21 +244,21 @@ class PolicyAgent():
         """
         Updates Calico store with new resource information
         """
-        # Create/update Namespace Profiles
         for namespace_key, ns in self.changed_namespaces.items():
+            # Create/update Namespace Profiles
             if ns.create_ns_profile():
                 self.nsResourceVersion = ns.resourceVersion
                 self.namespaces[namespace_key] = ns
                 del self.changed_namespaces[namespace_key]
 
-        # Process Services
         for service_key, svc in self.changed_services.items():
+            # Process Services
             self.svcResourceVersion = svc.resourceVersion
             self.services[service_key] = svc
             del self.changed_services[service_key]
 
-        # Apply Namespace policy to new/updated pods
         for pod_key, po in self.changed_pods.items():
+            # Apply Namespace policy to new/updated pods
             if po.apply_ns_policy():
                 if po.remove_default_profile():
                     self.poResourceVersion = po.resourceVersion
@@ -271,11 +270,10 @@ class PolicyAgent():
         # TODO: if some object not ready for resync, finish loop w/out moving to
         # processed list
         for ep_key, ep in self.changed_endpoints.items():
-
             # Get policy of the Service and namespace. Uses same namespace/name
             # dict key.
             try:
-                svc_policy = self.services[ep_key].type
+                svc_type = self.services[ep_key].type
             except KeyError:
                 _log.warning("Service %s not yet in store" % ep_key)
                 continue
@@ -286,30 +284,32 @@ class PolicyAgent():
                 _log.warning("Namespace %s not yet in store" % ep.namespace)
                 continue
 
-            _log.info("Using svc policy %s and ns policy %s" %
-                      (svc_policy, ns_policy))
+            _log.info("Using svc policy %s and ns policy %s" % \
+                      (svc_type, ns_policy))
 
-            # if namespace is open, or svc is closed, do nothing
-            if ns_policy == "Open" or svc_policy == "NamespaceIP":
+            if ns_policy == "Open" or svc_type == SVC_TYPE_NAMESPACE_IP:
+                # If namespace is open, or svc is closed, do nothing.
+                # Namespace_IP services can only exists in Closed namespaces,
+                # in which case NamespaceIP service policy is redundant
+                # When the Namespace is open, all valid service types are open as well.
                 self.endpoints[ep_key] = ep
                 del self.changed_endpoints[ep_key]
-
-            # else define service policy
             else:
-                # find pods and append profiles
+                # else define service policy
                 associations = ep.generate_svc_profiles_pods()
                 for profile, pods in associations.items():
+                    # find pods and append profiles
                     for pod in pods:
                         existing_pod = self.match_pod(
                             namespace=ep.namespace, name=pod)
-                        #_log.info("Adding profile %s to pod %s" % (profile, existing_pod))
+                        _log.debug("Adding profile %s to pod %s" % (profile, existing_pod))
                         if existing_pod:
                             try:
                                 _datastore_client.append_profiles_to_endpoint(profile_names=[profile],
                                                                               endpoint_id=existing_pod.ep_id)
                             except ProfileAlreadyInEndpoint:
-                                _log.warning(
-                                    "Applying %s to Pod %s : Profile Already exists" % (profile, existing_pod.key))
+                                _log.warning("Applying %s to Pod %s : Profile Already exists" % \
+                                             (profile, existing_pod.key))
                         else:
                             _log.warning("Pod %s is not yet processed" % (pod))
 
@@ -340,7 +340,7 @@ class Resource():
         """
         raise NotImplementedError("init_from_json not implemented.")
 
-    @property    
+    @property
     def key(self):
         """
         Abstract method.
@@ -357,6 +357,7 @@ class Namespace(Resource):
     def init_from_json(self, json):
         self.kind = KIND_NAMESPACE
         self.name = json["metadata"]["name"]
+        self.profile_name = "namespace_%s" % self.name
 
         try:
             self.policy = json["spec"]["experimentalNetworkPolicy"]
@@ -369,32 +370,32 @@ class Namespace(Resource):
         return self.name
 
     def create_ns_profile(self):
-        # Derive NS tag
-        ns_tag = "namespace_%s" % self.name
-
+        """
+        Generates an Open or Closed policy profile based on the Namespace's networkPolicy
+        """
         # Add Tags
-        profile_path = PROFILE_PATH % {"profile_id": ns_tag}
+        profile_path = PROFILE_PATH % {"profile_id": self.profile_name}
         _datastore_client.etcd_client.write(
-            profile_path + "tags", '["%s"]' % ns_tag)
+            profile_path + "tags", '["%s"]' % self.profile_name)
 
         # Determine rule set based on policy
         default_allow = Rule(action="allow")
 
         if self.policy == "Open":
-            rules = Rules(id=ns_tag,
+            rules = Rules(id=self.profile_name,
                           inbound_rules=[default_allow],
                           outbound_rules=[default_allow])
-            _log.info("Applying Open Rules to NS Profile %s" % ns_tag)
-
+            _log.info("Applying Open Rules to NS Profile %s" % \
+                      self.profile_name)
         elif self.policy == "Closed":
-            rules = Rules(id=ns_tag,
-                          inbound_rules=[Rule(action="allow", src_tag=ns_tag)],
+            rules = Rules(id=self.profile_name,
+                          inbound_rules=[Rule(action="allow",
+                                              src_tag=self.profile_name)],
                           outbound_rules=[default_allow])
-            _log.info("Applying Closed Rules to NS Profile %s" % ns_tag)
-
+            _log.info("Applying Closed Rules to NS Profile %s" % \
+                      self.profile_name)
         else:
-            _log.error(
-                "Namespace %s policy is neither Open nor Closed" % self.name)
+            _log.error("Namespace %s policy is neither Open nor Closed" % self.name)
             return False
 
         # Write rules to profile
@@ -403,12 +404,7 @@ class Namespace(Resource):
         return True
 
     def delete_ns_profile(self):
-        # Derive NS tag
-        ns_tag = "namespace_%s" % self.name
-
-        # Remove from Store
-        _datastore_client.remove_profile(ns_tag)
-        return True
+        _datastore_client.remove_profile(self.profile_name)
 
 
 class Service(Resource):
@@ -421,7 +417,7 @@ class Service(Resource):
             self.type = json["spec"]["type"]
         except KeyError:
             _log.warning("Service Type not specified assuming NamespaceIP")
-            self.type = "NamespaceIP"
+            self.type = SVC_TYPE_NAMESPACE_IP
 
     @property
     def key(self):
@@ -439,8 +435,7 @@ class Pod(Resource):
         except KeyError:
             # If the annotations do not contain a Calico endpoint, it is likely because the plugin
             # hasn't processed this pod yet.
-            _log.warning(
-                "Pod %s does not yet have a Calico Endpoint" % self.key())
+            _log.warning("Pod %s does not yet have a Calico Endpoint" % self.key())
             self.ep_id = None
 
     @property
@@ -448,27 +443,27 @@ class Pod(Resource):
         return "%s/%s" % (self.namespace, self.name)
 
     def apply_ns_policy(self):
-        ns_tag = "namespace_%s" % self.namespace
+        namespace_profile = "namespace_%s" % self.namespace
 
-        if self.ep_id and _datastore_client.profile_exists(ns_tag) and _datastore_client.get_endpoints(endpoint_id=self.ep_id):
+        if self.ep_id and _datastore_client.profile_exists(namespace_profile) and _datastore_client.get_endpoints(endpoint_id=self.ep_id):
             try:
-                _log.info("Applying %s NS policy to EP %s" %
+                _log.info("Applying %s NS policy to EP %s" % \
                           (self.namespace, self.ep_id))
-                _datastore_client.append_profiles_to_endpoint(profile_names=[ns_tag],
+                _datastore_client.append_profiles_to_endpoint(profile_names=[namespace_profile],
                                                               endpoint_id=self.ep_id)
             except ProfileAlreadyInEndpoint:
-                _log.warning(
-                    "Apply %s to Pod %s : Profile Already exists" % (ns_tag, self.key))
+                _log.warning("Apply %s to Pod %s : Profile Already exists" % \
+                             (namespace_profile, self.key))
                 pass
             return True
         else:
-            _log.error("Pod Resource %s found before Namespace Resource %s" % (
-                self.name, self.namespace))
+            _log.error("Pod Resource %s found before Namespace Resource %s" % \
+                       (self.name, self.namespace))
             return False
 
     def remove_default_profile(self):
         """
-        remove the default reject all rule programmed by the plugin
+        Remove the default reject all rule programmed by the plugin.
         """
         default_profile = DEFAULT_PROFILE_REJECT
         try:
@@ -528,11 +523,13 @@ class Endpoints(Resource):
                 arg = None
             return arg
 
-        self.association_list = dict()
+        self.association_list = {}
         for subset in self.subsets:
+            # Base profile_name string
+            profile_name = "%s_svc_%s" % (self.namespace, self.name)
 
             # Generate a list of new svc profiles per port spec
-            port_rules = list()
+            port_rules = []
             for port_spec in subset["ports"]:
                 dst_port = verify_args(port_spec, "port")
                 protocol = verify_args(port_spec, "protocol").lower()
@@ -540,15 +537,12 @@ class Endpoints(Resource):
                     port_rules.append(Rule(action="allow",
                                            dst_ports=[dst_port],
                                            protocol=protocol))
+                    profile_name = "%s_%s%s" % (
+                        profile_name, protocol, dst_port)
 
             # Create Profile for the subset
-            # TODO: better profile names
-            profile_name = "svc_%s_%s_port_%s_protocol_%s" % (
-                self.namespace, self.name, dst_port, protocol)
-            _log.info("Adding Profile %s to Store" % profile_name)
-
             if not _datastore_client.profile_exists(profile_name):
-                _log.info("Creating Profile %s in Store" % profile_name)
+                _log.info("Creating Profile %s" % profile_name)
                 profile_path = PROFILE_PATH % {"profile_id": profile_name}
                 _datastore_client.etcd_client.write(
                     profile_path + "tags", '["%s"]' % profile_name)
@@ -562,19 +556,17 @@ class Endpoints(Resource):
                 # Write rules to profile
                 _datastore_client.etcd_client.write(
                     profile_path + "rules", rules.to_json())
-
             else:
-                _log.warning("Profile %s already in Store" % profile_name)
+                _log.warning("Profile %s already exists" % profile_name)
 
             # Generate list of pod names
-            pods = list()
+            pods = []
             for pod in subset["addresses"]:
                 pods.append(pod["targetRef"]["name"])
 
-            # Assumes profile does not exist
             self.association_list[profile_name] = pods
 
-        _log.info("association list:\n%s" % self.association_list)
+        _log.debug("association list:\n%s" % self.association_list)
         return self.association_list
 
 
