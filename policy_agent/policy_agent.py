@@ -280,7 +280,7 @@ class PolicyAgent():
 
             try:
                 ns_policy = self.namespaces[ep.namespace].policy
-            except KeyError, AttributeError:
+            except KeyError:
                 _log.warning("Namespace %s not yet in store" % ep.namespace)
                 continue
 
@@ -413,11 +413,7 @@ class Service(Resource):
         self.kind = KIND_SERVICE
         self.name = json["metadata"]["name"]
         self.namespace = json["metadata"]["namespace"]
-        try:
-            self.type = json["spec"]["type"]
-        except KeyError:
-            _log.warning("Service Type not specified assuming NamespaceIP")
-            self.type = SVC_TYPE_NAMESPACE_IP
+        self.type = json["spec"]["type"]
 
     @property
     def key(self):
