@@ -64,7 +64,8 @@ class NetworkPlugin(object):
                          e.returncode, e.output, e)
             sys.exit(1)
 
-        # Give the policy agent a reference to the endpoint in the API
+        # Give the policy agent a reference to the endpoint in the API.
+        # Only done after Endpoint configuration to avoid Policy Agent Race Condition.
         resource_path = "namespaces/%(namespace)s/pods/%(podname)s" % \
                         {"namespace": self.namespace, "podname": self.pod_name}
         ep_data = '{"metadata":{"annotations":{"%s":"%s"}}}' % (
@@ -77,8 +78,7 @@ class NetworkPlugin(object):
         self.docker_id = docker_id
         self.namespace = namespace
 
-        logger.info('Deleting container %s',
-                    self.docker_id)
+        logger.info('Deleting container %s', self.docker_id)
 
         # Remove the profile for the workload.
         self._container_remove()
@@ -194,7 +194,6 @@ class NetworkPlugin(object):
                     'dev', endpoint.name])
 
         logger.info('Finished configuring Calico network interface')
-
         return endpoint
 
     def _container_add(self, pid, interface):
@@ -254,7 +253,7 @@ class NetworkPlugin(object):
                 ip_list, ipv6_addrs = self._datastore_client.auto_assign_ips(
                     1, 0, self.docker_id, None)
                 ip = ip_list[0]
-                logger.debug( "ip_list is %s; ipv6_addrs is %s", ip_list, ipv6_addrs)
+                logger.debug("ip_list is %s; ipv6_addrs is %s", ip_list, ipv6_addrs)
                 assert not ipv6_addrs
             except RuntimeError as err:
                 logger.error("Cannot auto assign IPAddress: %s", err.message)

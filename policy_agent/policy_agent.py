@@ -230,37 +230,28 @@ class PolicyAgent():
         assert kind in VALID_KINDS, "Invalid Kind %s" % kind
 
         if kind == KIND_NAMESPACE:
-            resource_pool = self.namespaces
+            resource_list = self.namespaces
             resource = Namespace(resource_json)
 
         elif kind == KIND_SERVICE:
-            resource_pool = self.services
+            resource_list = self.services
             resource = Service(resource_json)
 
         elif kind == KIND_POD:
-            resource_pool = self.pods
+            resource_list = self.pods
             resource = Pod(resource_json)
 
         elif kind == KIND_ENDPOINTS:
-            resource_pool = self.endpoints
+            resource_list = self.endpoints
             resource = Endpoints(resource_json)
 
-        target_key = resource.key
-
-        if target_key in resource_pool:
-            del resource_pool[target_key]
-            _log.info("%s %s deleted from Calico store" % (kind, target_key))
+        if resource.key in resource_list:
+            del resource_list[resource.key]
+            _log.info("%s %s deleted from Calico store" % (kind, resource.key))
 
         else:
             _log.error("Tried to Delete %s %s but it was not in bin" %
-                       (kind, target_key))
-
-    def match_pod(self, namespace, name):
-        try:
-            return self.pods["%s/%s" % (namespace, name)]
-        except KeyError:
-            _log.error("Pod %s in NS %s not processed" % (name, namespace))
-            return None
+                       (kind, resource.key))
 
     def resync(self):
         """
@@ -335,14 +326,15 @@ class PolicyAgent():
                 self.endpoints[ep_key] = ep
                 del self.changed_endpoints[ep_key]
             else:
+                # Namespace is Closed, but Service is Open, we need to create an open profile
+                # for the Open Ports
                 _log.debug("Defining Service Policy.")
                 ep.generate_svc_profiles_pods()
 
                 for profile, pod_names in ep.service_profiles.items():
                     # Find pods and append profiles.
                     for pod_name in pod_names:
-                        pod = self.match_pod(namespace=ep.namespace,
-                                             name=pod_name)
+                        pod = self.pods.get("%s/%s" % (ep.namespace, pod_name))
                         if pod:
                             pod.append_profile(profile)
                         else:
