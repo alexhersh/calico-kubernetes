@@ -7,10 +7,13 @@ from threading import Thread
 
 import requests
 
+import common
 from common.constants import *
+from common.util import configure_logger, _get_api_stream, _get_api_list
+import pycalico
 from pycalico.datastore_datatypes import Rules, Rule, Profile
 from pycalico.datastore_errors import ProfileNotInEndpoint, ProfileAlreadyInEndpoint
-from pycalico.datastore import DatastoreClient, PROFILE_PATH
+from pycalico.datastore import DatastoreClient
 
 POLICY_LOG_DIR = "/var/log/calico/kubernetes"
 POLICY_LOG = "%s/policy-agent.log" % POLICY_LOG_DIR
@@ -27,6 +30,9 @@ CMD_DELETED = "DELETED"
 VALID_COMMANDS = [CMD_ADDED, CMD_MODIFIED, CMD_DELETED]
 
 _log = logging.getLogger(__name__)
+util_logger = logging.getLogger(common.util.__name__)
+pycalico_logger = logging.getLogger(pycalico.__name__)
+
 _datastore_client = DatastoreClient()
 
 
@@ -145,9 +151,9 @@ class PolicyAgent():
                 if not update:
                     # Get next update, if EOQ, raise Queue.Empty
                     update = self.watcher_queue.get_nowait()
-                json = json.loads(update)
-                command = json["type"]
-                resource_json = json["object"]
+                raw_json = json.loads(update)
+                command = raw_json["type"]
+                resource_json = raw_json["object"]
                 kind = resource_json["kind"]
 
                 _log.debug("Reading update %s: %s" % (resource_json, kind))
@@ -158,7 +164,7 @@ class PolicyAgent():
                     self.process_resource(command=command,
                                           kind=kind,
                                           resource_json=resource_json)
-            update = None
+                update = None
 
             except Queue.Empty:
                 # If Queue is empty and Pending Changes exist, resync.
@@ -587,70 +593,20 @@ def _keep_watch(queue, resource, resource_version):
             time.sleep(10)
 
 
-def _get_api_token():
-    """
-    Get the kubelet Bearer token for this node, used for HTTPS auth.
-    If no token exists, this method will return an empty string.
-    :return: The token.
-    :rtype: str
-    """
-    try:
-        with open('/var/lib/kubelet/kubernetes_auth') as f:
-            json_string = f.read()
-    except IOError as e:
-        return ""
-
-    auth_data = json.loads(json_string)
-    return auth_data['BearerToken']
-
-
-def _get_api_stream(resource, resource_version):
-    """
-    Watch a stream from the API given a resource.
-
-    :param resource: The plural resource you would like to watch.
-    :return: A stream of json objs e.g. {"type": "MODIFED"|"ADDED"|"DELETED", "object":{...}}
-    :rtype stream
-    """
-    path = "watch/%s?resourceVersion=%s" % (resource, resource_version)
-    _log.info(
-        'Streaming API Resource: %s from KUBE_API_ROOT: %s', path, KUBE_API_ROOT)
-    bearer_token = _get_api_token()
-    session = requests.Session()
-    session.headers.update({'Authorization': 'Bearer ' + bearer_token})
-    session = requests.Session()
-    return session.get("%s%s" % (KUBE_API_ROOT, path),
-                       verify=False, stream=True)
-
-
-def _get_api_list(resource):
-    """
-    Get a resource from the API specified API path.
-    e.g.
-    _get_api_list(default, services)
-
-    :param resource: plural resource type
-    :return: A JSON API object
-    :rtype json dict
-    """
-    _log.info(
-        'Getting API Resource: %s from KUBE_API_ROOT: %s', resource, KUBE_API_ROOT)
-    bearer_token = _get_api_token()
-    session = requests.Session()
-    session.headers.update({'Authorization': 'Bearer ' + bearer_token})
-    response = session.get(KUBE_API_ROOT + resource, verify=False)
-    return json.loads(response.text)
-
-
 if __name__ == '__main__':
 
-    if not os.path.exists(POLICY_LOG_DIR):
-        os.makedirs(POLICY_LOG_DIR)
-
-    hdlr = logging.FileHandler(filename=POLICY_LOG)
-    hdlr.setFormatter(logging.Formatter(LOG_FORMAT))
-    _log.addHandler(hdlr)
-    _log.setLevel(LOG_LEVEL)
+    configure_logger(logger=_log, 
+                     logging_level=LOG_LEVEL,
+                     log_file=POLICY_LOG,
+                     root_logger=True)
+    configure_logger(logger=pycalico_logger, 
+                     logging_level=LOG_LEVEL,
+                     log_file=PLUGIN_LOG,
+                     root_logger=False)
+    configure_logger(logger=util_logger, 
+                     logging_level=LOG_LEVEL,
+                     log_file=PLUGIN_LOG,
+                     root_logger=False)
 
     app = PolicyAgent()
     app.run()

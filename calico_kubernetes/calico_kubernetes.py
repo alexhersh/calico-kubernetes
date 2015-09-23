@@ -10,9 +10,8 @@ from docker.errors import APIError
 import sh
 from netaddr import IPAddress, AddrFormatError
 
-from common.util import _patch_api
+from common.util import _patch_api, configure_logger
 from common.constants import *
-from logutils import configure_logger
 import pycalico
 from pycalico import netns
 from pycalico.datastore import RULES_PATH
@@ -22,28 +21,13 @@ from pycalico.ipam import IPAMClient
 from pycalico.block import AlreadyAssignedError
 
 logger = logging.getLogger(__name__)
+util_logger = logging.getLogger(common.util.__name__)
 pycalico_logger = logging.getLogger(pycalico.__name__)
 
+# Docker and Host information.
 DOCKER_VERSION = "1.16"
 ORCHESTRATOR_ID = "docker"
 HOSTNAME = socket.gethostname()
-
-ETCD_AUTHORITY_ENV = "ETCD_AUTHORITY"
-if ETCD_AUTHORITY_ENV not in os.environ:
-    os.environ[ETCD_AUTHORITY_ENV] = 'kubernetes-master:6666'
-
-# Append to existing env, to avoid losing PATH etc.
-# Need to edit the path here since calicoctl loads client on import.
-CALICOCTL_PATH = os.environ.get('CALICOCTL_PATH', '/usr/bin/calicoctl')
-
-# Flag to indicate whether or not to use Calico IPAM.
-# If False, use the default docker container ip address to create container.
-# If True, use libcalico's auto_assign IPAM to create container.
-CALICO_IPAM = os.environ.get('CALICO_IPAM', 'true')
-
-# Flag to indicate whether or not to use Calico Policy.
-# Determines the default policy profile.
-CALICO_POLICY = os.environ.get('CALICO_POLICY', 'false')
 
 
 class NetworkPlugin(object):
@@ -461,8 +445,18 @@ class NetworkPlugin(object):
 
 
 if __name__ == '__main__':
-    configure_logger(logger, LOG_LEVEL, True)
-    configure_logger(pycalico_logger, LOG_LEVEL, False)
+    configure_logger(logger=logger, 
+                     logging_level=LOG_LEVEL,
+                     log_file=PLUGIN_LOG,
+                     root_logger=True)
+    configure_logger(logger=pycalico_logger, 
+                     logging_level=LOG_LEVEL,
+                     log_file=PLUGIN_LOG,
+                     root_logger=False)
+    configure_logger(logger=util_logger, 
+                     logging_level=LOG_LEVEL,
+                     log_file=PLUGIN_LOG,
+                     root_logger=False)
 
     mode = sys.argv[1]
 
