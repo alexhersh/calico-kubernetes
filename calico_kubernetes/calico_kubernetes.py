@@ -10,6 +10,7 @@ from docker.errors import APIError
 import sh
 from netaddr import IPAddress, AddrFormatError
 
+import common
 from common.util import _patch_api, configure_logger
 from common.constants import *
 import pycalico
