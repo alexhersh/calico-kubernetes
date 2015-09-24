@@ -226,7 +226,6 @@ class PolicyAgent():
         :param kind: String in VALID_KINDS
         :param resource_json: json dict of resource info
         """
-        assert command in VALID_COMMANDS, "Invalid Command %s" % command
         assert kind in VALID_KINDS, "Invalid Kind %s" % kind
 
         if kind == KIND_NAMESPACE:
