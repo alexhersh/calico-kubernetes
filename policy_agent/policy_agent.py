@@ -231,10 +231,12 @@ class PolicyAgent():
         if kind == KIND_NAMESPACE:
             resource_list = self.namespaces
             resource = Namespace(resource_json)
+            _datastore_client.remove_profile(resource.profile_name)
 
         elif kind == KIND_SERVICE:
             resource_list = self.services
             resource = Service(resource_json)
+            self.remove_service_profiles(resource)
 
         elif kind == KIND_POD:
             resource_list = self.pods
@@ -251,6 +253,31 @@ class PolicyAgent():
         else:
             _log.error("Tried to Delete %s %s but it was not in bin" %
                        (kind, resource.key))
+
+    def remove_service_profiles(self, service):
+        """
+        Match a Service to its Endpoints obj and purge svc profiles from pods.
+        :param service: Service Obj being deleted.
+        """
+        _log.info("Deleting Profile(s) for Service %s/%s" % (service.namespace, service.name))
+        endpoints = self.endpoints.get("%s/%s" % (service.namespace, service.name))
+
+        if endpoints:
+            for profile, pod_names in endpoints.service_profiles.items():
+                for pod_name in pod_names:
+                    pod = self.pods.get("%s/%s" % (endpoints.namespace, pod_name))
+                    if not pod:
+                        _log.debug("Pod %s not in pool. (Already Deleted?)" % pod_name)
+                        continue
+
+                    pod.remove_profile(profile)
+
+                # With all pods purged of profile, delete profile.
+                _datastore_client.remove_profile(profile)
+                _log.info("Profile %s deleted" % profile)
+        else:
+            _log.error("Endpoints for Service %s not in list. "
+                       "Service Profile may not be deleted." % service.key)
 
     def resync(self):
         """
@@ -463,7 +490,7 @@ class Pod(Resource):
         if not _datastore_client.profile_exists(profile_name):
             _log.warning("Profile %s does not exist" % profile_name)
 
-        if not self.ep_id or not _datastore_client.get_endpoints(endpoint_id=self.ep_id):
+        if not self.ep_id or not _datastore_client.get_endpoint(endpoint_id=self.ep_id):
             _log.warning("Pod %s with Endpoint ID %s does not have a Calico Endpoint" % (self.key, self.ep_id))
 
         try:
@@ -490,6 +517,7 @@ class Endpoints(Resource):
         self.name = json["metadata"]["name"]
         self.namespace = json["metadata"]["namespace"]
         self.subsets = json["subsets"]
+        self.service_profiles = {}
 
     @property
     def key(self):
@@ -519,7 +547,6 @@ class Endpoints(Resource):
         :return: A generated dict of profile-pod associations.
         :rtype: a dict of profiles mapping to a list of associated pods.
         """
-        self.service_profiles = {}
         for subset in self.subsets:
             profile_name = "%s_svc_%s" % (self.namespace, self.name)
 
@@ -570,6 +597,8 @@ def _keep_watch(queue, resource, resource_version):
     """
     Called by watcher threads. Adds watch events to Queue
     """
+    from time import sleep
+    thread_log = logging.getLogger(__name__)
     while True:
         try:
             response = _get_api_stream(resource, resource_version)
@@ -580,8 +609,8 @@ def _keep_watch(queue, resource, resource_version):
             # If we hit an exception attempting to watch this path, log it, and retry the watch
             # after a short sleep in order to prevent tight-looping.  We catch all BaseExceptions
             # so that the thread never dies.
-            _log.exception("Exception watching path %s", resource)
-            time.sleep(10)
+            thread_log.exception("Exception watching path %s", resource)
+            sleep(10)
 
 
 if __name__ == '__main__':
