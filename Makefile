@@ -6,9 +6,8 @@ BUILD_FILES=$(BUILD_DIR)/Dockerfile $(BUILD_DIR)/requirements.txt
 
 default: all
 all: binaries test
-binaries: binary policybin
+binaries: binary policy
 test: ut
-policy_agent: policyagent.created
 
 # Build a new docker image to be used by binary or tests
 kubernetesbuild.created: $(BUILD_FILES)
@@ -28,7 +27,7 @@ binary: kubernetesbuild.created
 	-e PYTHONPATH=/code \
 	calico/kubernetes-build pyinstaller calico_kubernetes/calico_kubernetes.py -a -F -s --clean
 
-policybin: kubernetesbuild.created
+policy: kubernetesbuild.created
 	mkdir -p policy_agent/dist
 	chmod 777 `pwd`/policy_agent/dist
 

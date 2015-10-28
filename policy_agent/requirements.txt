@@ -1,5 +1,0 @@
-PyInstaller==2.1
-git+https://github.com/projectcalico/libcalico.git@v0.2.0
-sh==1.11
-docker-py==1.2.1
-requests==2.7.0

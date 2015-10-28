@@ -11,7 +11,7 @@ import sh
 from netaddr import IPAddress, AddrFormatError
 
 import common
-from common.util import _patch_api, configure_logger
+from common.util import _patch_api, configure_logger, IdentityFilter
 from common.constants import *
 import pycalico
 from pycalico import netns
@@ -40,15 +40,12 @@ class NetworkPlugin(object):
         self.docker_id = None
 
         self._datastore_client = IPAMClient()
-        self.calicoctl = sh.Command(CALICOCTL_PATH).bake(_env=os.environ)
         self._docker_client = Client(
             version=DOCKER_VERSION,
             base_url=os.getenv("DOCKER_HOST", "unix://var/run/docker.sock"))
 
     def create(self, namespace, pod_name, docker_id):
         """"Create a pod."""
-        # Calicoctl does not support the '-' character in iptables rule names.
-        # TODO: fix Felix to support '-' characters.
         self.pod_name = pod_name
         self.docker_id = docker_id
         self.namespace = namespace
@@ -71,7 +68,9 @@ class NetworkPlugin(object):
                         {"namespace": self.namespace, "podname": self.pod_name}
         ep_data = '{"metadata":{"annotations":{"%s":"%s"}}}' % (
             EPID_ANNOTATION_KEY, endpoint.endpoint_id)
+        logger.info('Adding endpoint annotation to pod %s', self.pod_name)
         _patch_api(path=resource_path, patch=ep_data)
+        logger.info('Endpoint annotation succeeded %s', self.pod_name)
 
     def delete(self, namespace, pod_name, docker_id):
         """Cleanup after a pod."""
@@ -97,6 +96,8 @@ class NetworkPlugin(object):
                 workload_id=self.docker_id
             )
         except KeyError:
+            # Obtain information from Docker Client and validate container state
+            self._validate_container_state(self.docker_id)
             logger.error("Container %s doesn't contain any endpoints", self.docker_id)
             sys.exit(1)
 
@@ -321,9 +322,9 @@ class NetworkPlugin(object):
 
         # We can't set up Calico if the container shares the host namespace.
         if info["HostConfig"]["NetworkMode"] == "host":
-            logger.error("Can't add the container to Calico because it is "
-                         "running NetworkMode = host.")
-            sys.exit(1)
+            logger.warning("Can't add the container to Calico because it is "
+                           "running NetworkMode = host.")
+            sys.exit(0)
 
     def _get_container_info(self, container_name):
         try:
@@ -444,37 +445,84 @@ class NetworkPlugin(object):
         logger.info('Finished applying rules.')
 
 
-if __name__ == '__main__':
-    configure_logger(logger=logger, 
-                     logging_level=LOG_LEVEL,
-                     log_file=PLUGIN_LOG,
-                     root_logger=True)
-    configure_logger(logger=pycalico_logger, 
-                     logging_level=LOG_LEVEL,
-                     log_file=PLUGIN_LOG,
-                     root_logger=False)
-    configure_logger(logger=util_logger, 
-                     logging_level=LOG_LEVEL,
-                     log_file=PLUGIN_LOG,
-                     root_logger=False)
-
+def run_protected():
+    """
+    Runs the plugin, intercepting all exceptions.
+    """
+    # Parse arguments and configure logging
+    global logger, pycalico_logger
     mode = sys.argv[1]
+    namespace = sys.argv[2].replace('/', '_') if len(sys.argv) >=3 else None
+    pod_name = sys.argv[3].replace('/', '_') if len(sys.argv) >=4 else None
+    docker_id = sys.argv[4] if len(sys.argv) >=5 else None
 
+    # Append a stdout logging handler to log to the Kubelet.
+    # We cannot do this in the status hook because the Kubelet looks to
+    # stdout for status results.
+    log_to_stdout = (mode != 'status')
+
+    # Filter the logger to append the Docker ID to logs.
+    # If docker_id is not supplied, do not include it in logger config.
+    if docker_id:
+        configure_logger(logger=logger,
+                         log_level=LOG_LEVEL,
+                         log_format=DOCKER_ID_ROOT_LOG_FORMAT,
+                         log_to_stdout=log_to_stdout)
+        configure_logger(logger=pycalico_logger,
+                         log_level=LOG_LEVEL,
+                         log_format=DOCKER_ID_LOG_FORMAT,
+                         log_to_stdout=log_to_stdout)
+
+        docker_filter = IdentityFilter(identity=str(docker_id)[:12])
+        logger.addFilter(docker_filter)
+        pycalico_logger.addFilter(docker_filter)
+    else:
+        configure_logger(logger=logger,
+                         log_level=LOG_LEVEL,
+                         log_format=ROOT_LOG_FORMAT,
+                         log_to_stdout=log_to_stdout)
+        configure_logger(logger=pycalico_logger,
+                         log_level=LOG_LEVEL,
+                         log_format=LOG_FORMAT,
+                         log_to_stdout=log_to_stdout)
+
+    # Try to run the plugin, logging out any BaseExceptions raised.
+    logger.info("Begin Calico network plugin execution")
+    logger.info('Plugin Args: %s', sys.argv)
+    rc = 0
+    try:
+        run(mode=mode,
+            namespace=namespace,
+            pod_name=pod_name,
+            docker_id=docker_id)
+    except SystemExit as e:
+        # If a SystemExit is thrown, we've already handled the error and have
+        # called sys.exit().  No need to produce a duplicate exception
+        # message, just set the return code.
+        rc = e
+    except BaseException:
+        # Log the exception and set the return code to 1.
+        logger.exception("Unhandled Exception killed plugin")
+        rc = 1
+    finally:
+        # Log that we've finished, and exit with the correct return code.
+        logger.info("Calico network plugin execution complete")
+        sys.exit(rc)
+
+def run(mode, namespace, pod_name, docker_id):
     if mode == 'init':
         logger.info('No initialization work to perform')
+    elif mode == "status":
+        # Status is called on a regular basis - handle separately
+        # to avoid flooding the logs.
+        logger.info('Executing Calico pod-status hook')
+        NetworkPlugin().status(namespace, pod_name, docker_id)
     else:
-        # These args only present for setup/teardown.
-        namespace = sys.argv[2].replace('/', '_')
-        pod_name = sys.argv[3].replace('/', '_')
-        docker_id = sys.argv[4]
-
-        logger.info('Args: %s' % sys.argv)
         logger.info("Using LOG_LEVEL=%s", LOG_LEVEL)
-        logger.info("Using ETCD_AUTHORITY=%s", os.environ[ETCD_AUTHORITY_ENV])
-        logger.info("Using CALICOCTL_PATH=%s", CALICOCTL_PATH)
+        logger.info("Using ETCD_AUTHORITY=%s",
+                    os.environ[ETCD_AUTHORITY_ENV])
         logger.info("Using KUBE_API_ROOT=%s", KUBE_API_ROOT)
         logger.info("Using CALICO_IPAM=%s", CALICO_IPAM)
-        logger.info("Using CALICO_POLICY=%s", CALICO_POLICY)
 
         if mode == 'setup':
             logger.info('Executing Calico pod-creation hook')
@@ -482,6 +530,7 @@ if __name__ == '__main__':
         elif mode == 'teardown':
             logger.info('Executing Calico pod-deletion hook')
             NetworkPlugin().delete(namespace, pod_name, docker_id)
-        elif mode == 'status':
-            logger.info('Executing Calico pod-status hook')
-            NetworkPlugin().status(namespace, pod_name, docker_id)
+
+
+if __name__ == '__main__':  # pragma: no cover
+    run_protected()
