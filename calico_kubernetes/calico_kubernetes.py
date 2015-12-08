@@ -15,6 +15,7 @@
 # Import print_function to use a testable "print()" function
 # instead of keyword "print".
 from __future__ import print_function
+from __init__ import __VERSION__
 
 import os
 import re
@@ -952,6 +953,7 @@ def run_protected():
 
     # Try to run the plugin, logging out any BaseExceptions raised.
     logger.debug("Begin Calico network plugin execution")
+    logger.debug('Plugin Version: %s', __VERSION__)
     logger.debug('Plugin Args: %s', sys.argv)
     rc = 0
     try:
@@ -988,6 +990,8 @@ def run(mode, namespace, pod_name, docker_id, config):
         elif mode == "status":
             logger.debug('Executing Calico pod-status hook')
             NetworkPlugin(config).status(namespace, pod_name, docker_id)
+        elif mode == "version":
+            print("Calico Kubernetes Plugin ", __VERSION__)
 
 
 if __name__ == '__main__':  # pragma: no cover
